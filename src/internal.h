@@ -10,3 +10,4 @@ std::string praat_error_text();
 std::mutex& praat_mutex();
 void bind_object(pybind11::module_& module);
 void bind_invoke(pybind11::module_& module);
+void bind_catalog(pybind11::module_& module);

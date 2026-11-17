@@ -4,6 +4,7 @@
 #include <string>
 
 #include "Data.h"
+#include "Interpreter.h"
 #include "ManPages.h"
 #include "main_Praat.h"
 #include "melder.h"
@@ -43,6 +44,15 @@ void ensure_praat() {
 	});
 	praat_uvafon_init();
 	praat_picture_init(false);
+	// Menu commands invoked from Python have an interpreter but no script.
+	// Praat 7 treats that as untrusted and refuses to save files. A script
+	// that arrived through run_file still goes through the normal check.
+	Melder_setTrustProc([](void* void_interpreter, conststring32 message) {
+		Interpreter interpreter = static_cast<Interpreter>(void_interpreter);
+		if (interpreter && !interpreter->scriptReference && !interpreter->notebookReference)
+			return;
+		MelderTrust::_defaultProc(void_interpreter, message);
+	});
 	ready = true;
 }
 
@@ -65,6 +75,7 @@ PYBIND11_MODULE(_pypraat, module) {
 	module.doc() = "Praat, compiled in-process.";
 	bind_object(module);
 	bind_invoke(module);
+	bind_catalog(module);
 	module.def("run_file", &run_file, py::arg("path"),
 	           "Run a Praat script file through the script interpreter.");
 }

@@ -18,8 +18,13 @@ array so `invoke` can park it. The per-thread channel stays on
 
 ## Command catalog
 
-Not yet. `theActions` is function-local, so a later commit adds
-`praat_commandCatalog()`.
+`praat_commandCatalog()` walks object actions and fixed menu commands. A
+title containing `...` is a form: the callback is called with `narg == -1`,
+`UiForm_info` records the form, and the catalog reads each `UiField` (kind,
+name, label, default, options). A file dialog has no fields; it is reported
+as one `fileName` argument. `DIRECT` commands return immediately for a
+negative `narg`, so the catalog does not run them. `Thing_classCatalog()`
+lists readable classes and their parents.
 
 ## Trace hook
 
