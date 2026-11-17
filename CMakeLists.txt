@@ -84,10 +84,18 @@ if(APPLE)
   )
 endif()
 
-python_add_library(_pypraat MODULE src/module.cpp WITH_SOABI)
-set_source_files_properties(src/module.cpp PROPERTIES LANGUAGE OBJCXX)
+execute_process(
+  COMMAND ${Python_EXECUTABLE} -c "import numpy; print(numpy.get_include())"
+  OUTPUT_VARIABLE NUMPY_INCLUDE
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  COMMAND_ERROR_IS_FATAL ANY
+)
+
+python_add_library(_pypraat MODULE src/module.cpp src/object.cpp src/invoke.cpp WITH_SOABI)
+set_source_files_properties(src/module.cpp src/object.cpp src/invoke.cpp PROPERTIES LANGUAGE OBJCXX)
 target_link_libraries(_pypraat PRIVATE pybind11::headers praat)
 target_include_directories(_pypraat PRIVATE
+  ${NUMPY_INCLUDE}
   ${PRAAT_DIR}/sys
   ${PRAAT_DIR}/melder
   ${PRAAT_DIR}/kar

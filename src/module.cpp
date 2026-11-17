@@ -1,22 +1,20 @@
-#include <pybind11/pybind11.h>
+#include "internal.h"
 
 #include <stdexcept>
 #include <string>
 
+#include "Data.h"
+#include "ManPages.h"
+#include "main_Praat.h"
 #include "melder.h"
 #include "praat.h"
 #include "praatP.h"
 #include "praat_script.h"
 #include "praat_uvafon_init.h"
-#include "ManPages.h"
-#include "Data.h"
-#include "main_Praat.h"
 
 namespace py = pybind11;
 
-namespace {
-
-std::string error_text() {
+std::string praat_error_text() {
 	conststring32 message = Melder_getError();
 	std::string text = message ? Melder_peek32to8(message) : "Praat error";
 	Melder_clearError();
@@ -34,7 +32,7 @@ void ensure_praat() {
 	Melder_setAppDate(PRAAT_YEAR, PRAAT_MONTH, PRAAT_DAY);
 	Melder_setAppContactAddress(U"paul.boersma", U"uva.nl");
 	theCurrentPraatApplication->manPages = ManPages_create().releaseToAmbiguousOwner();
-	Data_setPublishProc([] (autoDaata me) -> int {
+	Data_setPublishProc([](autoDaata me) -> int {
 		try {
 			praat_new(me.move(), U"");
 			praat_updateSelection();
@@ -48,7 +46,8 @@ void ensure_praat() {
 	ready = true;
 }
 
-void run_file(const std::string &path) {
+void run_file(const std::string& path) {
+	std::lock_guard<std::mutex> lock(praat_mutex());
 	ensure_praat();
 	Melder_rememberShellDirectory();
 	try {
@@ -58,14 +57,14 @@ void run_file(const std::string &path) {
 		autostring32 fileName = Melder_8to32_e(path.c_str());
 		praat_executeScriptFromCommandLine(fileName.get(), 0, nullptr, true);
 	} catch (MelderError) {
-		throw std::runtime_error(error_text());
+		throw std::runtime_error(praat_error_text());
 	}
 }
 
-}  // namespace
-
 PYBIND11_MODULE(_pypraat, module) {
 	module.doc() = "Praat, compiled in-process.";
+	bind_object(module);
+	bind_invoke(module);
 	module.def("run_file", &run_file, py::arg("path"),
-		"Run a Praat script file through the script interpreter.");
+	           "Run a Praat script file through the script interpreter.");
 }
