@@ -1,0 +1,71 @@
+#include <pybind11/pybind11.h>
+
+#include <stdexcept>
+#include <string>
+
+#include "melder.h"
+#include "praat.h"
+#include "praatP.h"
+#include "praat_script.h"
+#include "praat_uvafon_init.h"
+#include "ManPages.h"
+#include "Data.h"
+#include "main_Praat.h"
+
+namespace py = pybind11;
+
+namespace {
+
+std::string error_text() {
+	conststring32 message = Melder_getError();
+	std::string text = message ? Melder_peek32to8(message) : "Praat error";
+	Melder_clearError();
+	return text;
+}
+
+void ensure_praat() {
+	static bool ready = false;
+	if (ready)
+		return;
+	MelderConsole_init();
+	praatlib_init();
+	Melder_setAppName(U"Praat");
+	Melder_setAppVersion(U"" stringize(PRAAT_VERSION_STR), PRAAT_VERSION_NUM);
+	Melder_setAppDate(PRAAT_YEAR, PRAAT_MONTH, PRAAT_DAY);
+	Melder_setAppContactAddress(U"paul.boersma", U"uva.nl");
+	theCurrentPraatApplication->manPages = ManPages_create().releaseToAmbiguousOwner();
+	Data_setPublishProc([] (autoDaata me) -> int {
+		try {
+			praat_new(me.move(), U"");
+			praat_updateSelection();
+			return 1;
+		} catch (MelderError) {
+			Melder_throw(U"Not published.");
+		}
+	});
+	praat_uvafon_init();
+	praat_picture_init(false);
+	ready = true;
+}
+
+void run_file(const std::string &path) {
+	ensure_praat();
+	Melder_rememberShellDirectory();
+	try {
+		// praat_runScript is the nested `runScript` call and needs a parent
+		// interpreter. `praat --run` enters a file through this function.
+		// The batch suite saves audio, which Praat 7 allows only with full trust.
+		autostring32 fileName = Melder_8to32_e(path.c_str());
+		praat_executeScriptFromCommandLine(fileName.get(), 0, nullptr, true);
+	} catch (MelderError) {
+		throw std::runtime_error(error_text());
+	}
+}
+
+}  // namespace
+
+PYBIND11_MODULE(_pypraat, module) {
+	module.doc() = "Praat, compiled in-process.";
+	module.def("run_file", &run_file, py::arg("path"),
+		"Run a Praat script file through the script interpreter.");
+}

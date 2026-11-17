@@ -1,0 +1,20 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.13"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "pypraat"
+version = "0.1.0"
+description = "Praat menu commands as generated Python methods."
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+authors = [{name = "pypraat"}]
+
+[tool.scikit-build]
+minimum-version = "0.10"
+cmake.build-type = "Release"
+wheel.packages = ["python/pypraat"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
