@@ -28,5 +28,11 @@ lists readable classes and their parents.
 
 ## Trace hook
 
-Not yet. A later commit adds one function-pointer hook at the menu dispatch
-inside `praat_executeCommand`.
+`praat_setMenuTraceHook` installs one function pointer. `praat_executeCommand`
+calls it once, after a menu command has run and before `praat_updateSelection`.
+The call carries the title, the classes and copies of the objects that were
+selected, the list names and ids of that selection, the other objects that
+were in the list (so a formula can name them), the arguments,
+`kInterpreter_ReturnType`, the info text, and the objects the command created.
+The copies belong to the hook. Directives such as `select` and `print` are not
+menu commands and are not reported.

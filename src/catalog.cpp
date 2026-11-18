@@ -71,7 +71,7 @@ void collect_class(conststring32 name, conststring32 parent, void* closure) {
 }
 
 py::list command_catalog() {
-	std::lock_guard<std::mutex> lock(praat_mutex());
+	std::lock_guard<std::recursive_mutex> lock(praat_mutex());
 	ensure_praat();
 	py::list commands;
 	praat_commandCatalog(&collect_command, &commands);
@@ -79,7 +79,7 @@ py::list command_catalog() {
 }
 
 py::list class_catalog() {
-	std::lock_guard<std::mutex> lock(praat_mutex());
+	std::lock_guard<std::recursive_mutex> lock(praat_mutex());
 	ensure_praat();
 	py::list classes;
 	Thing_classCatalog(&collect_class, &classes);

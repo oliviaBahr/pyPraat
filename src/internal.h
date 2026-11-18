@@ -7,7 +7,10 @@
 
 void ensure_praat();
 std::string praat_error_text();
-std::mutex& praat_mutex();
+std::recursive_mutex& praat_mutex();
+void bind_trace(pybind11::module_& module);
 void bind_object(pybind11::module_& module);
 void bind_invoke(pybind11::module_& module);
 void bind_catalog(pybind11::module_& module);
+// While set, invoke runs inside this script interpreter so formulas see its variables.
+void borrow_script_interpreter(void* interpreter);

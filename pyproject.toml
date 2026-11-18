@@ -18,4 +18,5 @@ wheel.packages = ["python/pypraat"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -m 'not slow'"
+markers = ["slow: replay the whole Praat batch suite"]

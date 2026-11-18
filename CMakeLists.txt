@@ -91,8 +91,8 @@ execute_process(
   COMMAND_ERROR_IS_FATAL ANY
 )
 
-python_add_library(_pypraat MODULE src/module.cpp src/object.cpp src/invoke.cpp src/catalog.cpp WITH_SOABI)
-set_source_files_properties(src/module.cpp src/object.cpp src/invoke.cpp src/catalog.cpp PROPERTIES LANGUAGE OBJCXX)
+python_add_library(_pypraat MODULE src/module.cpp src/object.cpp src/invoke.cpp src/catalog.cpp src/trace.cpp WITH_SOABI)
+set_source_files_properties(src/module.cpp src/object.cpp src/invoke.cpp src/catalog.cpp src/trace.cpp PROPERTIES LANGUAGE OBJCXX)
 target_link_libraries(_pypraat PRIVATE pybind11::headers praat)
 target_include_directories(_pypraat PRIVATE
   ${NUMPY_INCLUDE}

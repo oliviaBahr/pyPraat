@@ -57,7 +57,7 @@ void ensure_praat() {
 }
 
 void run_file(const std::string& path) {
-	std::lock_guard<std::mutex> lock(praat_mutex());
+	std::lock_guard<std::recursive_mutex> lock(praat_mutex());
 	ensure_praat();
 	Melder_rememberShellDirectory();
 	try {
@@ -76,6 +76,7 @@ PYBIND11_MODULE(_pypraat, module) {
 	bind_object(module);
 	bind_invoke(module);
 	bind_catalog(module);
+	bind_trace(module);
 	module.def("run_file", &run_file, py::arg("path"),
 	           "Run a Praat script file through the script interpreter.");
 }

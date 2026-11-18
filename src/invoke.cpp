@@ -22,8 +22,8 @@
 
 namespace py = pybind11;
 
-std::mutex& praat_mutex() {
-	static std::mutex mutex;
+std::recursive_mutex& praat_mutex() {
+	static std::recursive_mutex mutex;
 	return mutex;
 }
 
@@ -88,8 +88,9 @@ void append_argument(MelderString* line, py::handle argument) {
 		MelderString_append(line, Melder_integer(static_cast<int64>(value)));
 	} else if (py::isinstance<py::float_>(argument)) {
 		double value = argument.cast<double>();
+		// Praat scripts write an undefined number as the word `undefined`.
 		if (!std::isfinite(value))
-			MelderString_append(line, U"--undefined--");
+			MelderString_append(line, U"undefined");
 		else
 			MelderString_append(line, Melder_double(value));
 	} else if (py::isinstance<py::str>(argument)) {
@@ -181,7 +182,18 @@ struct Borrowed {
 	PraatObject* owner = nullptr;
 	Daata raw = nullptr;
 	bool inserted = false;
+	bool foreign = false;
 };
+
+struct ReplayObject {
+	Daata raw = nullptr;
+	autostring32 name;
+	integer id = 0;
+};
+
+std::vector<ReplayObject> replay_context;
+std::vector<autostring32> replay_selected_names;
+std::vector<integer> replay_selected_ids;
 
 struct Session {
 	std::vector<HeldSlot> parked;
@@ -193,6 +205,7 @@ struct Session {
 	integer saved_latest_id = 0;
 	integer saved_selected[1 + structPraatObjects::MAXNUM_DATA_CLASSES]{};
 	bool objects_parked = false;
+	size_t selected_name_index = 0;
 
 	MelderStringOwner capture;
 	MelderInfo::Proc saved_proc = nullptr;
@@ -267,13 +280,33 @@ struct Session {
 		if (!owner->data)
 			throw std::runtime_error("This Praat object no longer exists.");
 		Daata raw = owner->data.releaseToAmbiguousOwner();
-		borrowed.push_back(Borrowed{owner, raw, false});
+		borrowed.push_back(Borrowed{owner, raw, false, false});
 		insert_borrowed(raw);
 		borrowed.back().inserted = true;
+		if (selected_name_index < replay_selected_names.size()) {
+			conststring32 name = replay_selected_names[selected_name_index].get();
+			if (name && name[0])
+				theCurrentPraatObjects->list[theCurrentPraatObjects->n].name = Melder_dup(name);
+		}
+		if (selected_name_index < replay_selected_ids.size() && replay_selected_ids[selected_name_index])
+			assign_id(theCurrentPraatObjects->n, replay_selected_ids[selected_name_index]);
+		if (selected_name_index < replay_selected_names.size() ||
+		    selected_name_index < replay_selected_ids.size())
+			selected_name_index++;
 		praat_select(theCurrentPraatObjects->n);
 	}
 
+	void insert_replay_context() {
+		for (ReplayObject& item : replay_context) {
+			if (!item.raw)
+				continue;
+			insert_named(item.raw, item.name.get(), item.id);
+			borrowed.push_back(Borrowed{nullptr, item.raw, true, true});
+		}
+	}
+
 	void select_receivers(py::handle receivers) {
+		insert_replay_context();
 		if (!receivers.is_none()) {
 			if (py::isinstance<PraatObject>(receivers))
 				select_one(receivers);
@@ -284,6 +317,36 @@ struct Session {
 		// Menu dispatch runs a command only when its executable flag matches the
 		// selection. praat_select does not refresh those flags; praat_show does.
 		praat_show();
+	}
+
+	void assign_id(integer index, integer id) {
+		structPraatObjects* list = theCurrentPraatObjects;
+		list->list[index].id = id;
+		if (id > list->sequentialUniqueIdOfLatestObjectInList)
+			list->sequentialUniqueIdOfLatestObjectInList = id;
+	}
+
+	void insert_named(Daata raw, conststring32 full_name, integer id) {
+		structPraatObjects* list = theCurrentPraatObjects;
+		if (list->n == praat_MAXNUM_OBJECTS)
+			throw std::runtime_error("The Praat object list is full.");
+		integer index = ++list->n;
+		structPraat_Object& slot = list->list[index];
+		slot.klas = nullptr;
+		slot.object = nullptr;
+		slot.name.reset();
+		MelderFile_setToNull(&slot.file);
+		slot.id = 0;
+		slot.isSelected = false;
+		slot.isBeingCreated = false;
+		for (int editor = 0; editor < praat_MAXNUM_EDITORS; editor++)
+			slot.editors[editor] = nullptr;
+		slot.name = Melder_dup(full_name && full_name[0] ? full_name : U"untitled");
+		slot.klas = raw->classInfo;
+		slot.object = raw;
+		slot.id = id ? id : ++list->sequentialUniqueIdOfLatestObjectInList;
+		if (slot.id > list->sequentialUniqueIdOfLatestObjectInList)
+			list->sequentialUniqueIdOfLatestObjectInList = slot.id;
 	}
 
 	void insert_borrowed(Daata raw) {
@@ -332,9 +395,11 @@ struct Session {
 				continue;
 			bool was_borrowed = false;
 			for (Borrowed& item : borrowed) {
-				if (item.raw == raw && item.owner) {
-					item.owner->data.adoptFromAmbiguousOwner(raw);
-					item.owner = nullptr;
+				if (item.raw == raw && (item.owner || item.foreign)) {
+					if (item.owner) {
+						item.owner->data.adoptFromAmbiguousOwner(raw);
+						item.owner = nullptr;
+					}
 					was_borrowed = true;
 					break;
 				}
@@ -522,29 +587,135 @@ autoInterpreterStack& interpreter_stack() {
 	return stack;
 }
 
+Interpreter script_interpreter = nullptr;
+
+struct ParkedReturn {
+	kInterpreter_ReturnType type = kInterpreter_ReturnType::VOID_;
+	bool boolean = false;
+	autostring32 string;
+	autoVEC real_vector;
+	autoINTVEC integer_vector;
+	autoMAT real_matrix;
+	autoSTRVEC string_array;
+};
+
+ParkedReturn park_return(Interpreter interpreter) {
+	ParkedReturn parked;
+	parked.type = interpreter->returnType;
+	parked.boolean = interpreter->returnedBoolean;
+	parked.string = std::move(interpreter->returnedString);
+	parked.real_vector = std::move(interpreter->returnedRealVector);
+	parked.integer_vector = std::move(interpreter->returnedIntegerVector);
+	parked.real_matrix = std::move(interpreter->returnedRealMatrix);
+	parked.string_array = std::move(interpreter->returnedStringArray);
+	interpreter->returnType = kInterpreter_ReturnType::VOID_;
+	interpreter->returnedBoolean = false;
+	return parked;
+}
+
+void unpark_return(Interpreter interpreter, ParkedReturn& parked) {
+	interpreter->returnType = parked.type;
+	interpreter->returnedBoolean = parked.boolean;
+	interpreter->returnedString = std::move(parked.string);
+	interpreter->returnedRealVector = std::move(parked.real_vector);
+	interpreter->returnedIntegerVector = std::move(parked.integer_vector);
+	interpreter->returnedRealMatrix = std::move(parked.real_matrix);
+	interpreter->returnedStringArray = std::move(parked.string_array);
+}
+
+struct RestoreReturn {
+	Interpreter interpreter = nullptr;
+	ParkedReturn parked;
+	bool active = false;
+
+	explicit RestoreReturn(Interpreter borrowed) {
+		if (!borrowed)
+			return;
+		interpreter = borrowed;
+		parked = park_return(borrowed);
+		active = true;
+	}
+
+	~RestoreReturn() {
+		if (active)
+			unpark_return(interpreter, parked);
+	}
+};
+
 py::object invoke(py::handle receivers, const std::string& title, py::args arguments) {
-	std::lock_guard<std::mutex> lock(praat_mutex());
+	std::lock_guard<std::recursive_mutex> lock(praat_mutex());
 	ensure_praat();
 	try {
 		Session session;
 		session.select_receivers(receivers);
 		autostring32 command = format_command(title, arguments);
-		autoInterpreter interpreter =
-		    Interpreter_createFromEnvironment(interpreter_stack().get(), Editor(nullptr), nullptr);
-		bool succeeded = praat_executeCommand(interpreter.get(), command.get());
+		autoInterpreter owned;
+		Interpreter interpreter = script_interpreter;
+		if (!interpreter) {
+			owned = Interpreter_createFromEnvironment(interpreter_stack().get(), Editor(nullptr), nullptr);
+			interpreter = owned.get();
+		}
+		RestoreReturn restore(script_interpreter);
+		bool succeeded = praat_executeCommand(interpreter, command.get());
 		if (Melder_hasError())
 			throw MelderError();
 		if (!succeeded)
 			Melder_throw(U"Command failed.");
-		return session.take_result(interpreter.get());
+		return session.take_result(interpreter);
 	} catch (MelderError) {
 		throw std::runtime_error(praat_error_text());
 	}
 }
 
+void set_replay_context(py::list objects, py::list names, py::list ids, py::list selected_names,
+                        py::list selected_ids) {
+	replay_context.clear();
+	replay_selected_names.clear();
+	replay_selected_ids.clear();
+	for (py::ssize_t index = 0; index < py::len(objects); index++) {
+		auto* raw = static_cast<Daata>(objects[index].cast<py::capsule>().get_pointer());
+		autostring32 name = Melder_8to32_e(py::cast<std::string>(names[index]).c_str());
+		replay_context.push_back(ReplayObject{raw, std::move(name), py::cast<integer>(ids[index])});
+	}
+	for (py::handle item : selected_names)
+		replay_selected_names.push_back(Melder_8to32_e(py::cast<std::string>(item).c_str()));
+	for (py::handle item : selected_ids)
+		replay_selected_ids.push_back(py::cast<integer>(item));
+}
+
+void clear_replay_context() {
+	replay_context.clear();
+	replay_selected_names.clear();
+	replay_selected_ids.clear();
+}
+
 } // namespace
 
+void borrow_script_interpreter(void* interpreter) {
+	script_interpreter = static_cast<Interpreter>(interpreter);
+}
+
+double script_number(const std::string& expression) {
+	if (!script_interpreter)
+		throw std::runtime_error("This expression is outside a script.");
+	double value = 0.0;
+	autostring32 text = Melder_8to32_e(expression.c_str());
+	try {
+		Interpreter_numericExpression(script_interpreter, text.get(), &value);
+	} catch (MelderError) {
+		throw std::runtime_error(praat_error_text());
+	}
+	if (isundef(value) || !std::isfinite(value))
+		return std::numeric_limits<double>::quiet_NaN();
+	return value;
+}
+
 void bind_invoke(py::module_& module) {
+	module.def("script_number", &script_number, py::arg("expression"),
+	           "Evaluate a numeric script expression in the command being replayed.");
+	module.def("set_replay_context", &set_replay_context, py::arg("objects"), py::arg("names"),
+	           py::arg("ids"), py::arg("selected_names"), py::arg("selected_ids"));
+	module.def("clear_replay_context", &clear_replay_context);
 	module.def("invoke", &invoke, py::arg("objects"), py::arg("title"),
 	           "Run one Praat menu command. objects is the selection. "
 	           "Trailing omitted arguments keep Praat's defaults.");
